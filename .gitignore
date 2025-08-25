@@ -1,7 +1,9 @@
-
+# Ignore everything
 *
 
-!*.py
+# But NOT these:
 !*.ipynb
+!*.py
 
+# Optional: Allow folders to be tracked (required if .ipynb/.py are in subfolders)
 !*/
