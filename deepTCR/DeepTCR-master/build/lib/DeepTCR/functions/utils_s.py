@@ -261,7 +261,7 @@ def Diff_Features(features,indices,sequences,type,sample_id,p_val_threshold,
                 if len(motif) < kernel:
                     motif = motif + 'X' * (kernel - len(motif))
                 motif = motif.lower()
-                motif = SeqRecord(Seq(motif,  ), str(ii))
+                motif = SeqRecord(Seq(motif, IUPAC.protein), str(ii))
                 motifs.append(motif)
 
             mag_write = str(np.around(df_features['Mag'][feature],3))
@@ -340,7 +340,7 @@ def Motif_Features(self,features,indices,sequences,directory_results,sub_dir,ker
                     motif = motif + 'X' * (kernel - len(motif))
                 motifs_logo.append(motif)
                 motif = motif.lower()
-                motif = SeqRecord(Seq(motif,  ), str(ii))
+                motif = SeqRecord(Seq(motif, IUPAC.protein), str(ii))
                 motifs.append(motif)
                 if ii > motif_seq-2:
                     break
@@ -398,7 +398,7 @@ def Motif_Features_Reg(self,features,indices,sequences,directory_results,sub_dir
                 motif = motif + 'X' * (kernel - len(motif))
             motifs_logo.append(motif)
             motif = motif.lower()
-            motif = SeqRecord(Seq(motif,  ), str(ii))
+            motif = SeqRecord(Seq(motif, IUPAC.protein), str(ii))
             motifs.append(motif)
             if ii > motif_seq - 2:
                 break
@@ -477,7 +477,7 @@ def Motif_Features_dep(self,features,indices,sequences,directory_results,sub_dir
                     motif = motif + 'X' * (kernel - len(motif))
                 motifs_logo.append(motif)
                 motif = motif.lower()
-                motif = SeqRecord(Seq(motif,  ), str(ii))
+                motif = SeqRecord(Seq(motif, IUPAC.protein), str(ii))
                 motifs.append(motif)
 
             mag_write =str(np.around(df_temp['Magnitude'].iloc[zz],3))

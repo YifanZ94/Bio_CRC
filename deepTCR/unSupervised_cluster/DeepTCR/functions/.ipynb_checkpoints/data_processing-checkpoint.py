@@ -1,5 +1,5 @@
 from Bio.SubsMat import MatrixInfo
-# from Bio.Alphabet import IUPAC
+from Bio.Alphabet import IUPAC
 from collections import OrderedDict
 import numpy as np
 import pandas as pd
@@ -22,7 +22,7 @@ def make_aa_df():
     aa_df.where(~aa_df.isnull(), other=aa_df.T, inplace=True)
 
     # only keep IUPAC protein letters
-    aa_keep = list('ACDEFGHIKLMNPQRSTVWY')
+    aa_keep = list(IUPAC.IUPACProtein.letters)
     aa_df = aa_df.loc[aa_keep, aa_keep]
 
     # add NULL '-' with max loss (min value) & median for match
@@ -72,7 +72,7 @@ def Process_Seq(df,col):
     #strip any white space and remove non-IUPAC characters
     df[col] = df[col].str.strip()
     df = df[~df[col].str.contains(r'[^A-Z]')]
-    iupac_c = set((list('ACDEFGHIKLMNPQRSTVWY')))
+    iupac_c = set((list(IUPAC.IUPACProtein.letters)))
     all_c = set(''.join(list(df[col])))
     searchfor = list(all_c.difference(iupac_c))
     if len(searchfor) != 0:
