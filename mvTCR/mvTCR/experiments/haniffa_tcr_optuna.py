@@ -22,7 +22,7 @@ parser.add_argument('--rna_weight', type=int, default=1)
 parser.add_argument('--model', type=str, default='moe')
 parser.add_argument('--gpus', type=int, default=1)
 parser.add_argument('--wo_tcr_genes', type=str, default="False")
-parser.add_argument('--conditional', type=str, default='patient_id')
+parser.add_argument('--conditional', type=str, default='mouse_id')
 parser.add_argument('--site', type=str, default=None)
 
 args = parser.parse_args()
