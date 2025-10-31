@@ -1,6 +1,9 @@
 # Ignore everything
 *
 
+!mvTCR/mvTCR/scarches/
+!workshop/
+
 # But NOT these:
 !*.ipynb
 !*.py
