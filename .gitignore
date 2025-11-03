@@ -10,3 +10,12 @@
 
 # Optional: Allow folders to be tracked (required if .ipynb/.py are in subfolders)
 !*/
+
+# Ignore GSE293883 directory
+Data processing/external_pp/GSE293883/
+
+# Ignore GSE178085 directory (has invalid Windows path names)
+Data processing/external_pp/GSE178085 /
+
+# Ignore Jupyter checkpoint files
+.ipynb_checkpoints/
