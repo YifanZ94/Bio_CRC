@@ -288,30 +288,7 @@ class rCCA(BaseEstimator, TransformerMixin):
     def fit_transform(self, X, Y):
         return self.fit(X, Y).transform(X, Y)
 
-from sklearn.model_selection import StratifiedKFold, GridSearchCV
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline
-
-# Train rCCA, then concatenate U|V and classify
-class ConcatRCCA(BaseEstimator, TransformerMixin):
-    def __init__(self, n_components=10, alpha_x=1.0, alpha_y=1.0):
-        self.n_components = n_components
-        self.alpha_x = alpha_x
-        self.alpha_y = alpha_y
-        self._rcca = RidgeCCA(n_components=n_components, alpha_x=alpha_x, alpha_y=alpha_y)
-
-    def fit(self, X_pair, y=None):
-        X1, X2 = X_pair
-        self._rcca.fit(X1, X2)
-        return self
-
-    def transform(self, X_pair):
-        X1, X2 = X_pair
-        U, V = self._rcca.transform(X1, X2)
-        return np.concatenate([U, V], axis=1)
-
-   
-
+    
 def subset_fractions_in_CV_scores(n_component, mdata, abs_target, cutoff):
     all_results = []
     suffixes = []
@@ -419,10 +396,6 @@ def train_test_corr(view_gene_c_train, view_tcr_c_train, view_gene_c_test, view_
         diff = corr_train - corr_test
 
         print(f"Component {i+1:<6} {corr_train:<15.4f} {corr_test:<15.4f} {diff:<15.4f}")
-
-        # Store CV scores in mdata
-        # mdata['gex'].obs['CV_score_'+str(i)] = view_tcr_c[:, i]
-        cv_list.append('CV_score_'+str(i))
     
     return correlations_train, correlations_test
 
