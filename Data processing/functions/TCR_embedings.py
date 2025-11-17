@@ -136,7 +136,20 @@ def compute_sequence_lengths(mdata, column_name):
     Returns:
     - numpy array of sequence lengths
     """
-    sequences = mdata.obs[column_name]
+    # Check each modality first (modality obs may have more rows than merged mdata.obs)
+    sequences = None
+    for mod_name in mdata.mod.keys():
+        if column_name in mdata[mod_name].obs.columns:
+            sequences = mdata[mod_name].obs[column_name]
+            break
+    
+    # Fall back to top-level obs if not found in any modality
+    if sequences is None:
+        if column_name in mdata.obs.columns:
+            sequences = mdata.obs[column_name]
+        else:
+            raise ValueError(f"Column '{column_name}' not found in mdata.obs or any modality obs")
+    
     lengths = np.array([len(str(seq)) if pd.notna(seq) and seq is not None else 0 for seq in sequences])
     return lengths
 
