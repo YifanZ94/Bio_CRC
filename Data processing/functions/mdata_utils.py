@@ -64,6 +64,7 @@ def merge_mdatas(
     mdatas: List[mu.MuData], mods: Optional[Sequence[str]] = None,
     keep_obs_columns: str = "common",   # 'common' per user request
     index_unique: Optional[str] = None, # set to '-' to disambiguate duplicate cell IDs
+    join_method = "outer",
 ) -> mu.MuData:
 
     if len(mdatas) == 0:
@@ -79,7 +80,7 @@ def merge_mdatas(
     #    mu.concat forwards to anndata.concat per-modality with join='outer'
     merged = md.concat(
         mdatas_harmonized,
-        join="outer",          # OUTER on vars (genes/features)
+        join= join_method,          # OUTER on vars (genes/features)
         label=None,
         keys=None,
         index_unique=index_unique,  # keep original IDs unless you need disambiguation
@@ -92,8 +93,9 @@ def merge_mdatas(
     merged.update()
     return merged
 
-# Keep same vars across all mods in one mdata
+
 def sync_mdata_obs(mdata):
+# Keep same vars across all mods in one mdata
     # sync obs across mods
     idx1 = mdata.mod["airr"].obs.index
     idx2 = mdata.mod["gex"].obs.index
@@ -133,10 +135,78 @@ def merge_anndata_to_base(anndata1, anndata2):
         # Add missing genes and reorder to match anndata1
         anndata2_full = ad.concat([anndata2, adata_pad], axis=1)
         anndata2_full = anndata2_full[:, anndata1.var_names]
+        
+        # # Sync var DataFrame: preserve anndata2.var for existing genes, use reference for missing genes
+        # # Start with anndata2.var and reindex to match anndata1.var_names
+        # var_synced = anndata2.var.reindex(anndata1.var_names)
+        # # For missing genes, fill with reference var information
+        # missing_genes_var = var_synced.index.difference(anndata2.var.index)
+        # if len(missing_genes_var) > 0:
+        #     # Add missing columns from reference if needed
+        #     for col in anndata1.var.columns:
+        #         if col not in var_synced.columns:
+        #             var_synced[col] = None
+        #     # Fill missing genes with reference var data
+        #     var_synced.loc[missing_genes_var] = anndata1.var.loc[missing_genes_var]
+        # anndata2_full.var = var_synced
+        
+        # Explicitly preserve all metadata from anndata2 after concat and reordering
+        anndata2_full.obs = anndata2.obs.copy()
+        if hasattr(anndata2, 'obsm') and anndata2.obsm is not None:
+            anndata2_full.obsm = anndata2.obsm.copy()
+        if hasattr(anndata2, 'obsp') and anndata2.obsp is not None:
+            anndata2_full.obsp = anndata2.obsp.copy()
+        if hasattr(anndata2, 'uns') and anndata2.uns is not None:
+            anndata2_full.uns = anndata2.uns.copy()
+        if hasattr(anndata2, 'layers') and anndata2.layers is not None:
+            anndata2_full.layers = anndata2.layers.copy()
 
     else:
         anndata2_full = anndata2[:, anndata1.var_names]
+        # Sync var DataFrame: preserve anndata2.var (all genes exist, just reordered)
+        var_synced = anndata2.var.reindex(anndata1.var_names)
+        # Add any missing columns from reference
+        for col in anndata1.var.columns:
+            if col not in var_synced.columns:
+                var_synced[col] = None
+                var_synced[col] = anndata1.var[col]
+        anndata2_full.var = var_synced
     return anndata2_full
+
+# Merge new mdata to ref mdata, sync genes with the ref mdata, keep all obs etc.
+def merge_mdata_to_base(mdata1, mdata2):
+    """
+    Merge mdata2 to match mdata1's var_names for each modality.
+    Pads missing genes with zeros and preserves all metadata from mdata2.
+    """
+    # Create a new mdata with synced modalities
+    synced_mods = {}
+    
+    # Sync each modality that exists in both mdatas
+    for mod_name in mdata1.mod.keys():
+        if mod_name in mdata2.mod:
+            synced_mods[mod_name] = merge_anndata_to_base(
+                mdata1.mod[mod_name], 
+                mdata2.mod[mod_name]
+            )
+        else:
+            print(f"Warning: Modality '{mod_name}' not found in mdata2, skipping")
+    
+    # Create new mdata with synced modalities
+    mdata2_synced = mu.MuData(synced_mods)
+    
+    # Preserve all top-level metadata from mdata2
+    mdata2_synced.obs = mdata2.obs.copy()
+    if hasattr(mdata2, 'obsm') and mdata2.obsm is not None:
+        mdata2_synced.obsm = mdata2.obsm.copy()
+    if hasattr(mdata2, 'obsp') and mdata2.obsp is not None:
+        mdata2_synced.obsp = mdata2.obsp.copy()
+    if hasattr(mdata2, 'uns') and mdata2.uns is not None:
+        mdata2_synced.uns = mdata2.uns.copy()
+    
+    # Update to sync shapes
+    mdata2_synced.update()
+    return mdata2_synced
 
 def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = None):
     prefixes_to_remove = ('CMO', 'ENSM',
