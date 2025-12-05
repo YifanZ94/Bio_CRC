@@ -179,10 +179,12 @@ def onehot_encode_categorical(mdata, column_name):
     return onehot_matrix
 
 
-from numpy.linalg import eigh
+from numpy.linalg import eigh   
 from scipy.linalg import cho_factor, cho_solve
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.preprocessing import StandardScaler
+from scipy.linalg import solve_triangular
+from scipy.linalg import svd
 
 class rCCA(BaseEstimator, TransformerMixin):
     """
@@ -241,7 +243,13 @@ class rCCA(BaseEstimator, TransformerMixin):
         C = M @ cho_solve(Ly, Syx, check_finite=False)          # Sxx^{-1} Sxy Syy^{-1} Syx
 
         # Solve for a; eigh since C is symmetric PSD
-        eigvals, A = eigh(C)
+
+        # eigvals, A = eigh(C)
+
+        eigvals, A = np.linalg.eig(C)
+        eigvals = eigvals.real
+        A = A.real
+
         # sort descending
         order = np.argsort(eigvals)[::-1]
         eigvals = eigvals[order]
@@ -259,8 +267,10 @@ class rCCA(BaseEstimator, TransformerMixin):
             # normalize so that var(U_i)=var(V_i)=1
             ai = A[:, [i]]
             bi = B[:, [i]]
+
             denom_x = float(ai.T @ Sxx_reg @ ai)
             denom_y = float(bi.T @ Syy_reg @ bi)
+
             if denom_x > 0:
                 A[:, [i]] /= np.sqrt(denom_x)
             if denom_y > 0:
@@ -273,6 +283,7 @@ class rCCA(BaseEstimator, TransformerMixin):
         # precompute to transform quickly
         self._fitted = True
         return self
+
 
     def transform(self, X, Y=None):
         if not getattr(self, "_fitted", False):
@@ -426,6 +437,39 @@ def plot_train_test_corr(correlations_train, correlations_test):
     for i, (train_val, test_val) in enumerate(zip(correlations_train, correlations_test)):
         ax.text(i, train_val, f'{train_val:.3f}', ha='center', va='bottom', fontsize=9, color='blue')
         ax.text(i, test_val, f'{test_val:.3f}', ha='center', va='top', fontsize=9, color='orange')
+    return ax
 
-    plt.tight_layout()
-    plt.show()
+
+# Calculate Pearson correlation between marker genes and CV scores
+from scipy.stats import pearsonr
+import seaborn as sns 
+def pearson_corr(adata, var1, markers, var_type='gene'):
+    corr_results = []
+    for cv_name in var1:
+        cv_scores = adata.obs[cv_name].values
+        for gene in markers:
+            if gene in adata.var_names or gene in adata.obs:
+                if var_type =='gene':
+                    # Get gene expression values
+                    gene_expr = adata[:, gene].X.toarray().flatten() if hasattr(adata[:, gene].X, 'toarray') else adata[:, gene].X.flatten()
+                
+                if var_type =='obs':
+                    # Get gene set scores
+                    gene_expr = gene_expr = adata.obs[gene].to_numpy().flatten() 
+
+                # Calculate Pearson correlation
+                corr, p_value = pearsonr(gene_expr, cv_scores)
+
+                corr_results.append({
+                    'CV_component': cv_name,
+                    'gene': gene,
+                    'pearson_r': round(corr, 4),
+                    'p_value': f'{p_value:.4e}',
+                    'significant': 'Yes' if p_value < 0.05 else 'No'
+                })
+            else:
+                print(f"Warning: Input '{gene}' not found in dataset")
+
+    df_gene_corr = pd.DataFrame(corr_results)
+    corr_matrix = df_gene_corr.pivot(index='CV_component', columns='gene', values='pearson_r')
+    return corr_matrix
