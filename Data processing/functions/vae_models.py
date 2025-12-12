@@ -29,31 +29,28 @@ class BaseConditionalVAE(nn.Module):
         return mu + eps * std
 
 
-class MultiModalConditionalVAE(BaseConditionalVAE):
+class SingleModalConditionalVAE(BaseConditionalVAE):
     """
-    Multi-modal Conditional VAE Model.
-    
-    Processes both TCR embeddings and GEX data together with conditional information.
+    Single-modality Conditional VAE Model (for GEX-only or TCR-only).
     
     Args:
-        tcr_dim: Dimension of TCR embeddings
-        gex_dim: Dimension of GEX data
-        condition_dim: Dimension of conditional input (e.g., sample ID one-hot)
+        input_dim: Dimension of input modality
+        condition_dim: Dimension of conditional input
         latent_dim: Dimension of latent space (default: 128)
         hidden_dim: Dimension of hidden layers (default: 512)
         n_classes: Number of classification classes (default: 3)
     """
-    def __init__(self, tcr_dim, gex_dim, condition_dim, latent_dim=128, hidden_dim=512, n_classes=3):
-        super(MultiModalConditionalVAE, self).__init__()
+    def __init__(self, input_dim, cond_in_dim, condition_emb_dim = 10, latent_dim=128, hidden_dim=512, n_classes=3):
+        super().__init__()
         
-        self.tcr_dim = tcr_dim
-        self.gex_dim = gex_dim
-        self.condition_dim = condition_dim
+        self.input_dim = input_dim
+        self.condition_dim = condition_emb_dim
         self.latent_dim = latent_dim
         self.n_classes = n_classes
+        self.hidden_dim = hidden_dim
         
-        # Encoder: combine both modalities with condition
-        encoder_input_dim = tcr_dim + gex_dim + condition_dim
+        # Encoder: input modality + condition
+        encoder_input_dim = input_dim
         self.encoder = nn.Sequential(
             nn.Linear(encoder_input_dim, hidden_dim),
             nn.ReLU(),
@@ -64,13 +61,123 @@ class MultiModalConditionalVAE(BaseConditionalVAE):
             nn.BatchNorm1d(hidden_dim // 2),
             nn.Dropout(0.2),
         )
+
+        self.encoder_condition = nn.Sequential(
+            nn.Linear(cond_in_dim, condition_emb_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(condition_emb_dim),
+        )
         
+        encoder_output_dim = hidden_dim // 2 + condition_emb_dim
         # Latent space parameters
-        self.fc_mu = nn.Linear(hidden_dim // 2, latent_dim)
-        self.fc_logvar = nn.Linear(hidden_dim // 2, latent_dim)
+        self.fc_mu = nn.Linear(encoder_output_dim, latent_dim)
+        self.fc_logvar = nn.Linear(encoder_output_dim, latent_dim)
+        
+        # Decoder: reconstruct input modality
+        decoder_input_dim = latent_dim + condition_emb_dim
+        self.decoder = nn.Sequential(
+            nn.Linear(decoder_input_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim // 2, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Linear(hidden_dim, input_dim)
+        )
+    
+        self.classifier = nn.Sequential(
+            nn.Linear(latent_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.Dropout(0.3),
+            nn.Linear(hidden_dim // 2, n_classes)
+        )
+
+    def encode(self, x, condition):
+        """Encode inputs to latent space"""
+        h = self.encoder(x)
+        h_cond = self.encoder_condition(condition)
+        h = torch.cat([h, h_cond], dim=1)
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+        return mu, logvar, h_cond
+    
+    def decode(self, z, cond_emb):
+        """Decode from latent space"""
+        z_cond = torch.cat([z, cond_emb], dim=1)
+        x_recon = self.decoder(z_cond)
+        return x_recon
+    
+    def forward(self, x, condition):
+        """Forward pass"""
+        mu, logvar, cond_emb = self.encode(x, condition)
+        z = self.reparameterize(mu, logvar)
+        x_recon = self.decode(z, cond_emb)
+        tissue_pred = self.classifier(z)
+        return x_recon, mu, logvar, z, tissue_pred
+
+
+class MultiModalConditionalVAE(BaseConditionalVAE):
+    """
+    Multi-modal Conditional VAE Model.
+    
+    Processes both TCR embeddings and GEX data together with conditional information.
+    
+    Args:
+        tcr_dim: Dimension of TCR embeddings
+        gex_dim: Dimension of GEX data
+        condition_emb_dim: Dimension of condition embedding (default: 10)
+        latent_dim: Dimension of latent space (default: 128)
+        hidden_dim: Dimension of hidden layers (default: 512)
+        n_classes: Number of classification classes (default: 3)
+    """
+    def __init__(self, tcr_dim, gex_dim, cond_in_dim, condition_emb_dim=10, latent_dim=128, hidden_dim=512, n_classes=3):
+        super().__init__()
+        
+        self.tcr_dim = tcr_dim
+        self.gex_dim = gex_dim
+        self.condition_dim = condition_emb_dim
+        self.latent_dim = latent_dim
+        self.hidden_dim = hidden_dim
+        self.n_classes = n_classes
+        
+        # Encoder: combine both modalities
+        self.encoder_tcr = nn.Sequential(
+            nn.Linear(tcr_dim, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.Dropout(0.2),
+        )
+
+        self.encoder_gex = nn.Sequential(
+            nn.Linear(gex_dim, hidden_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim),
+            nn.Dropout(0.2),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.BatchNorm1d(hidden_dim // 2),
+            nn.Dropout(0.2),
+        )
+
+        self.encoder_condition = nn.Sequential(
+            nn.Linear(cond_in_dim, condition_emb_dim),
+            nn.ReLU(),
+            nn.BatchNorm1d(condition_emb_dim),
+        )
+        
+        # Latent space parameters - account for both modalities + condition + additional_features
+        encoder_output_dim = hidden_dim // 2 + hidden_dim // 2  + condition_emb_dim
+        self.fc_mu = nn.Linear(encoder_output_dim, latent_dim)
+        self.fc_logvar = nn.Linear(encoder_output_dim, latent_dim)
         
         # Decoder: reconstruct both modalities
-        decoder_input_dim = latent_dim + condition_dim
+        decoder_input_dim = latent_dim + condition_emb_dim
         self.decoder_tcr = nn.Sequential(
             nn.Linear(decoder_input_dim, hidden_dim // 2),
             nn.ReLU(),
@@ -101,27 +208,29 @@ class MultiModalConditionalVAE(BaseConditionalVAE):
             nn.Dropout(0.3),
             nn.Linear(hidden_dim // 2, n_classes)
         )
-    
+
     def encode(self, tcr, gex, condition):
         """Encode inputs to latent space"""
-        x = torch.cat([tcr, gex, condition], dim=1)
-        h = self.encoder(x)
+        tcr_h = self.encoder_tcr(tcr)
+        gex_h = self.encoder_gex(gex)
+        h_cond = self.encoder_condition(condition)
+        h = torch.cat([tcr_h, gex_h, h_cond], dim=1)
         mu = self.fc_mu(h)
         logvar = self.fc_logvar(h)
-        return mu, logvar
+        return mu, logvar, h_cond
     
-    def decode(self, z, condition):
+    def decode(self, z, cond_emb):
         """Decode from latent space"""
-        z_cond = torch.cat([z, condition], dim=1)
+        z_cond = torch.cat([z, cond_emb], dim=1)
         tcr_recon = self.decoder_tcr(z_cond)
         gex_recon = self.decoder_gex(z_cond)
         return tcr_recon, gex_recon
     
     def forward(self, tcr, gex, condition):
         """Forward pass"""
-        mu, logvar = self.encode(tcr, gex, condition)
+        mu, logvar, cond_emb = self.encode(tcr, gex, condition)
         z = self.reparameterize(mu, logvar)
-        tcr_recon, gex_recon = self.decode(z, condition)
+        tcr_recon, gex_recon = self.decode(z, cond_emb)
         tissue_pred = self.classifier(z)
         return tcr_recon, gex_recon, mu, logvar, z, tissue_pred
 
@@ -147,15 +256,15 @@ class TransformerMultiModalConditionalVAE(BaseConditionalVAE):
         use_chunked_transformer: Whether to use chunked transformer (default: True)
         chunk_size: Size of each chunk for FeatureTransformerEncoder (default: 64)
     """
-    def __init__(self, tcr_dim, gex_dim, condition_dim, latent_dim=128, hidden_dim=512, 
+    def __init__(self, tcr_dim, gex_dim, condition_emb_dim=10, latent_dim=128, hidden_dim=512, 
                  n_classes=3, transformer_d_model=256, transformer_nhead=8, 
                  transformer_num_layers=2, transformer_dim_feedforward=1024, 
                  transformer_dropout=0.1, use_chunked_transformer=True, chunk_size=64):
-        super(TransformerMultiModalConditionalVAE, self).__init__()
+        super().__init__()
         
         self.tcr_dim = tcr_dim
         self.gex_dim = gex_dim
-        self.condition_dim = condition_dim
+        self.condition_dim = condition_emb_dim
         self.latent_dim = latent_dim
         self.n_classes = n_classes
         
@@ -198,7 +307,7 @@ class TransformerMultiModalConditionalVAE(BaseConditionalVAE):
             )
         
         # VAE Encoder: combine transformer outputs with condition
-        encoder_input_dim = transformer_d_model + transformer_d_model + condition_dim
+        encoder_input_dim = transformer_d_model + transformer_d_model + condition_emb_dim
         self.encoder = nn.Sequential(
             nn.Linear(encoder_input_dim, hidden_dim),
             nn.ReLU(),
@@ -215,7 +324,7 @@ class TransformerMultiModalConditionalVAE(BaseConditionalVAE):
         self.fc_logvar = nn.Linear(hidden_dim // 2, latent_dim)
         
         # Decoder: reconstruct both modalities
-        decoder_input_dim = latent_dim + condition_dim
+        decoder_input_dim = latent_dim + condition_emb_dim
         self.decoder_tcr = nn.Sequential(
             nn.Linear(decoder_input_dim, hidden_dim // 2),
             nn.ReLU(),
@@ -276,83 +385,4 @@ class TransformerMultiModalConditionalVAE(BaseConditionalVAE):
         return tcr_recon, gex_recon, mu, logvar, z, tissue_pred
 
 
-class SingleModalConditionalVAE(BaseConditionalVAE):
-    """
-    Single-modality Conditional VAE Model (for GEX-only or TCR-only).
-    
-    Args:
-        input_dim: Dimension of input modality
-        condition_dim: Dimension of conditional input
-        latent_dim: Dimension of latent space (default: 128)
-        hidden_dim: Dimension of hidden layers (default: 512)
-        n_classes: Number of classification classes (default: 3)
-    """
-    def __init__(self, input_dim, condition_dim, latent_dim=128, hidden_dim=512, n_classes=3):
-        super(SingleModalConditionalVAE, self).__init__()
-        
-        self.input_dim = input_dim
-        self.condition_dim = condition_dim
-        self.latent_dim = latent_dim
-        self.n_classes = n_classes
-        
-        # Encoder: input modality + condition
-        encoder_input_dim = input_dim + condition_dim
-        self.encoder = nn.Sequential(
-            nn.Linear(encoder_input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.Dropout(0.2),
-        )
-        
-        # Latent space parameters
-        self.fc_mu = nn.Linear(hidden_dim // 2, latent_dim)
-        self.fc_logvar = nn.Linear(hidden_dim // 2, latent_dim)
-        
-        # Decoder: reconstruct input modality
-        decoder_input_dim = latent_dim + condition_dim
-        self.decoder = nn.Sequential(
-            nn.Linear(decoder_input_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.Dropout(0.2),
-            nn.Linear(hidden_dim // 2, hidden_dim),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim),
-            nn.Linear(hidden_dim, input_dim)
-        )
-        
-        # Classifier head for tissue prediction
-        self.classifier = nn.Sequential(
-            nn.Linear(latent_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.BatchNorm1d(hidden_dim // 2),
-            nn.Dropout(0.3),
-            nn.Linear(hidden_dim // 2, n_classes)
-        )
-    
-    def encode(self, x, condition):
-        """Encode inputs to latent space"""
-        x_cond = torch.cat([x, condition], dim=1)
-        h = self.encoder(x_cond)
-        mu = self.fc_mu(h)
-        logvar = self.fc_logvar(h)
-        return mu, logvar
-    
-    def decode(self, z, condition):
-        """Decode from latent space"""
-        z_cond = torch.cat([z, condition], dim=1)
-        x_recon = self.decoder(z_cond)
-        return x_recon
-    
-    def forward(self, x, condition):
-        """Forward pass"""
-        mu, logvar = self.encode(x, condition)
-        z = self.reparameterize(mu, logvar)
-        x_recon = self.decode(z, condition)
-        tissue_pred = self.classifier(z)
-        return x_recon, mu, logvar, z, tissue_pred
 
