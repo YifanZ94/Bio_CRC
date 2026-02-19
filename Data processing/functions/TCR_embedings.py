@@ -12,6 +12,122 @@ import random
 random.seed(42)
 
 
+# Atchley factors for the 20 amino acids
+ATCHLEY_FACTORS = {
+    'A': [ 0.591, -1.302, -0.733,  1.570, -0.146],  # Alanine
+    'R': [ 1.538,  0.055,  1.502,  0.440,  2.897],  # Arginine
+    'N': [ 0.945,  0.828,  1.299, -0.169,  0.933],  # Asparagine
+    'D': [ 1.050,  0.302, -3.656, -0.259, -3.242],  # Aspartic acid
+    'C': [-1.343,  0.465, -0.862, -1.020, -0.255],  # Cysteine
+    'Q': [ 0.931,  0.179, -3.005, -0.503, -1.853],  # Glutamine
+    'E': [ 1.357,  0.113, -3.242, -0.339, -2.192],  # Glutamic acid
+    'G': [ 0.384,  1.652,  1.330,  1.045,  2.064],  # Glycine
+    'H': [ 0.336, -0.417, -1.673, -1.474, -0.078],  # Histidine
+    'I': [-1.239, -0.547,  2.131,  0.393,  0.816],  # Isoleucine
+    'L': [-1.019, -0.987, -1.505,  1.266, -0.912],  # Leucine
+    'K': [ 1.831, -0.561,  0.533, -0.277,  1.648],  # Lysine
+    'M': [-0.663, -1.524,  2.219, -1.005,  1.212],  # Methionine
+    'F': [-1.006, -0.590,  1.891, -0.397,  0.412],  # Phenylalanine
+    'P': [ 0.189,  2.081, -1.628,  0.421, -1.392],  # Proline
+    'S': [ 0.228,  1.399, -4.760,  0.670, -2.647],  # Serine
+    'T': [ 0.032,  2.213, -1.455,  0.311, -0.259],  # Threonine
+    'W': [-0.595,  0.009,  0.672, -2.128, -0.184],  # Tryptophan
+    'Y': [ 0.260,  0.830,  3.097, -0.838,  1.512],  # Tyrosine
+    'V': [-1.337, -0.279, -0.544,  1.242, -1.262],  # Valine
+}
+
+
+def embed_tcr_aa(mdata, tcr_aa_obs=None, tcr_cat_features=None, 
+                 atchley_factors=None, min_length=10, max_length=20, verbose=True):
+    """
+    Embed TCR amino acid sequences into vectors using Atchley factors and one-hot encoding.
+    
+    Parameters:
+    -----------
+    mdata : MuData
+        MuData object containing TCR data in obs
+    tcr_aa_obs : list, optional
+        List of column names containing TCR amino acid sequences.
+        Default: ['VDJ_1_cdr3_aa', 'VJ_1_cdr3_aa'] (both chains)
+    tcr_cat_features : list, optional  
+        List of categorical TCR features to one-hot encode.
+        Default: ['VDJ_1_j_call', 'VDJ_1_v_call', 'VJ_1_j_call', 'VJ_1_v_call']
+    atchley_factors : dict, optional
+        Dictionary mapping amino acids to Atchley factors. Uses default if None.
+    min_length : int
+        Minimum sequence length to keep (default: 10)
+    max_length : int
+        Maximum sequence length to keep (default: 20)
+    verbose : bool
+        Print progress messages (default: True)
+        
+    Returns:
+    --------
+    mdata : MuData
+        Filtered MuData with embeddings stored in obsm:
+        - X_{aa_col}_atchley: Atchley factor encoding
+        - X_{aa_col}_atchley_pairwise: Adjacent position interactions
+        - X_{aa_col}_composition: AA composition percentages
+        - {cat_col}: One-hot encoded categorical features
+    """
+    if tcr_aa_obs is None:
+        tcr_aa_obs = ['VDJ_1_cdr3_aa', 'VJ_1_cdr3_aa']
+    if tcr_cat_features is None:
+        tcr_cat_features = ['VDJ_1_j_call', 'VDJ_1_v_call', 'VJ_1_j_call', 'VJ_1_v_call']
+    if atchley_factors is None:
+        atchley_factors = ATCHLEY_FACTORS
+    
+    # Vectorize each TCR amino acid column and compute composition & length
+    for aa_col in tcr_aa_obs:
+        # 1. Sequence length filtering
+        lengths = compute_sequence_lengths(mdata, aa_col)
+        lengths_mask = (lengths > min_length) & (lengths < max_length)
+        len_key = f'{aa_col}_length'
+        mdata = mdata[lengths_mask]
+        mdata.obs[len_key] = lengths[lengths_mask]
+        if verbose:
+            print(f"Stored {aa_col} lengths in mdata.obs['{len_key}']")
+        
+        # 2. Atchley factor encoding
+        encoded = vectorize_tcr_column(mdata, aa_col, atchley_factors)
+        key_name = f'X_{aa_col}_atchley'
+        mdata.obsm[key_name] = encoded
+        if verbose:
+            print(f"Stored {aa_col} Atchley vectors in mdata.obsm['{key_name}'] with shape {encoded.shape}")
+        
+        # 2b. Adjacent Atchley factor interactions
+        atchley_positions = encoded.shape[1] // 5
+        pairwise_key = f'X_{aa_col}_atchley_pairwise'
+        if atchley_positions > 1:
+            encoded_reshaped = encoded.reshape(encoded.shape[0], atchley_positions, 5)
+            pairwise_features = []
+            for pos in range(atchley_positions - 1):
+                current = encoded_reshaped[:, pos, :]
+                nxt = encoded_reshaped[:, pos + 1, :]
+                outer = (current[:, :, None] * nxt[:, None, :]).reshape(encoded.shape[0], -1)
+                pairwise_features.append(outer)
+            pairwise_matrix = np.concatenate(pairwise_features, axis=1)
+        else:
+            pairwise_matrix = np.zeros((encoded.shape[0], 0))
+        mdata.obsm[pairwise_key] = pairwise_matrix
+        if verbose:
+            print(f"Stored {aa_col} adjacent Atchley interactions in mdata.obsm['{pairwise_key}'] with shape {pairwise_matrix.shape}")
+        
+        # 3. AA composition (percentage of each of 20 AAs)
+        aa_comp = compute_aa_composition_matrix(mdata, aa_col)
+        comp_key = f'X_{aa_col}_composition'
+        mdata.obsm[comp_key] = aa_comp
+        if verbose:
+            print(f"Stored {aa_col} AA composition in mdata.obsm['{comp_key}'] with shape {aa_comp.shape}\n")
+    
+    # One-hot encode all categorical TCR features
+    for cat_col in tcr_cat_features:
+        encoded = onehot_encode_categorical(mdata, cat_col)
+        mdata.obsm[cat_col] = encoded
+    
+    return mdata
+
+
 def encode_tcr_sequence(seq, max_length, atchley_factors):
     """
     Encode a TCR amino acid sequence into a vector using Atchley factors.

@@ -239,57 +239,68 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
     sc.pp.filter_genes(mdata['gex'], min_cells=50)
     
     ## markers 
-    type_sets = {"CD4" : ['Cd4', 'Cd4a'],
-                 "CD8" : ['Cd8a','Cd8b1','Nkg7'],
-                "Treg": ['Foxp3', 'Ikzf2', 'Ctla4', 'Il2ra'],
-                "Th17" : ['Ccr6', 'Il22', 'Il17', 'Il17a'],
-                    }
+    type_sets = {
+        "CD4"     : ['Cd4'],
+        "CD8"     : ['Cd8a', 'Cd8b1','Nkg7'],
+    }
 
-    state_sets = {"IFN_stim": ['Isg15', 'Gbp2', 'Ifih1'],
-                "Activation": ['Icos', 'Cd69', 'Cd28'],
-                "Exhaust": ['Pdcd1', 'Lag3', 'Havcr2'],
-                "Mem_Naive": ['Ccr7', 'Sell', 'Cd27'],
-                 }
+    CD4_cell_types = {
+        "Treg"    : ['Foxp3', 'Il2ra', 'Ctla4', 'Ikzf2'],
+        "Th1"     : ['Tbx21', 'Stat1', 'Stat4', 'Ifng', 'Tnf', 'Il2', 'Cxcr3', 'Ccr5', 'Il12rb1', 'Il12rb2', 'Il18r1'],
+        "Th2"     : ['Gata3', 'Stat6', 'Il4', 'Il5', 'Il13', 'Ccr4', 'Ccr8', 'Il1rl1', 'Ptgdr2', 'Areg'],
+        "Th17"    : ['Rorc', 'Rora', 'Stat3', 'Batf', 'Il17a', 'Il17f', 'Il22', 'Il21', 'Ccr6', 'Il23r'],
+    }
+
+    common_states = {
+        "Naive"         : ['Ccr7', 'Sell', 'Tcf7', 'Lef1', 'Il7r'],   # both CD4 and CD8 naive
+        "Cytotoxic"     : ['Gzmb', 'Gzma', 'Gzmk', 'Prf1', 'Nkg7'],  # Tem_CD8, SLEC, Tex_term, Th1-cytotoxic
+        "Exhaustion_core": ['Pdcd1', 'Tox', 'Lag3', 'Tigit', 'Havcr2'],# shared across Tpex, Tex_int, Tex_term
+        "Tcf7_stem"     : ['Tcf7', 'Bcl2', 'Id3', 'Bach2'],           # Tpex, MPEC, Naive
+        "Proliferating" : ['Mki67', 'Top2a', 'Tyms', 'Cdk1'],         # any cycling T cell
+        "IFN_stim"      : ['Isg15', 'Ifit1', 'Ifit3', 'Mx1', 'Oas1a', 'Gbp2'],
+        "Early_activ"   : ['Cd69','Cd28', 'Icos', 'Nr4a1', 'Nr4a2', 'Fos', 'Jun'],
+        "Memory_core"   : ['Il7r', 'Bcl2', 'S100a4', 'Ccl5'],         # Tcm, Tem, MPEC
+        "Effector_core" : ['Cx3cr1', 'S1pr1', 'Zeb2', 'Tbx21'],       # SLEC, Tem_CD8, Tex_KLR
+    }
     
     type_score_names = []
+    subtype_score_names = []
     state_score_names = []
        
-    ### assign cell types
+    ### 1) Score and assign main cell types (CD4/CD8)
     for name, val in type_sets.items():
-        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name= name+'score')
-        type_score_names.append(name+'score')
+        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name=name+'_score')
+        type_score_names.append(name+'_score')
      
-    if 'cell_type' not in mdata['gex'].obs:
-        mdata['gex'].obs['cell_type'] = np.nan
-
-    # 3) pick the highest-scoring type per cell
     scores = mdata['gex'].obs[type_score_names]
-    best_type = scores.idxmax(axis=1).str.replace(r'score$', '', regex=True)
-
-    # apply a global threshold
+    best_type = scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
     keep = scores.max(axis=1) > celltype_score
-    best_type = best_type.where(keep)
-
-    # 4) write labels
-    mdata['gex'].obs['cell_type'] = mdata['gex'].obs['cell_type'].fillna(best_type)
+    mdata['gex'].obs['cell_type'] = best_type.where(keep, np.nan)
     
-    ### assign cell states
-    for name, val in state_sets.items():
-        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name= name+'score')
-        state_score_names.append(name+'score')
+    ### 2) For CD4 cells, score subtypes and append to cell_type
+    for name, val in CD4_cell_types.items():
+        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name=name+'_score')
+        subtype_score_names.append(name+'_score')
+    
+    cd4_mask = mdata['gex'].obs['cell_type'] == 'CD4'
+    if cd4_mask.any():
+        subtype_scores = mdata['gex'].obs.loc[cd4_mask, subtype_score_names]
+        best_subtype = subtype_scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
+        subtype_keep = subtype_scores.max(axis=1) > celltype_score
+        # Append subtype to CD4 (e.g., "CD4_Treg")
+        mdata['gex'].obs.loc[cd4_mask, 'cell_type'] = (
+            'CD4_' + best_subtype.where(subtype_keep, '')
+        ).str.rstrip('_')
+    
+    ### 3) Assign cell states using common_states
+    for name, val in common_states.items():
+        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name=name+'_score')
+        state_score_names.append(name+'_score')
      
-    if 'state' not in mdata['gex'].obs:
-        mdata['gex'].obs['state'] = np.nan
-
     scores = mdata['gex'].obs[state_score_names]
-    best_type = scores.idxmax(axis=1).str.replace(r'score$', '', regex=True)
-
-    # apply a global threshold
+    best_state = scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
     keep = scores.max(axis=1) > cellstate_score
-    best_type = best_type.where(keep)
-
-    # 4) write labels
-    mdata['gex'].obs['state'] = mdata['gex'].obs['state'].fillna(best_type)   
+    mdata['gex'].obs['state'] = best_state.where(keep, np.nan)   
     
     mdata.obs['state'] = mdata['gex'].obs['state']
     mdata.obs['cell_type'] = mdata['gex'].obs['cell_type']
@@ -299,7 +310,7 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
         sc.pp.highly_variable_genes(mdata['gex'], n_top_genes=topN_variable)
         mdata.mod['gex'] = mdata['gex'][:, mdata['gex'].var['highly_variable']].copy()
 
-        mdata = mdata_utils.sync_mdata_obs(mdata)
+        mdata = sync_mdata_obs(mdata)
     else:
         pass
     
