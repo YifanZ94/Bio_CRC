@@ -213,8 +213,9 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
                       'Trav', 'Traj', 'Trac', 'Trbv', 'Trbj', 
                      'Trbc', 'Trdv', 'Trdj', 'Trdc', 'Trgv', 'Trgj', 'Trgc') 
 
-    TCR_gene_mask = mdata.var_names.str.startswith(prefixes_to_remove)
-    mdata = mdata[:, ~TCR_gene_mask]
+    # Filter TCR genes from gex modality only (not top-level mdata)
+    TCR_gene_mask = mdata['gex'].var_names.str.startswith(prefixes_to_remove)
+    mdata.mod['gex'] = mdata['gex'][:, ~TCR_gene_mask].copy()
 
     mdata['gex'].var_names_make_unique()
     
@@ -230,18 +231,16 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
         mdata['gex'], qc_vars=["mt", "ribo", "hb"], inplace=True, log1p=True
     )
     
-    sc.pp.filter_cells(mdata['gex'], min_genes= 300)
-    sc.pp.filter_cells(mdata['gex'], max_genes= 7000)
+    # sc.pp.filter_cells(mdata['gex'], min_genes= 300)
+    # sc.pp.filter_cells(mdata['gex'], max_genes= 7000)
+    # sc.pp.filter_cells(mdata['gex'], min_counts=1000)
+    # sc.pp.filter_cells(mdata['gex'], max_counts=40000)
+    # sc.pp.filter_genes(mdata['gex'], min_cells=50)
 
-    sc.pp.filter_cells(mdata['gex'], min_counts=1000)
-    sc.pp.filter_cells(mdata['gex'], max_counts=40000)
-
-    sc.pp.filter_genes(mdata['gex'], min_cells=50)
-    
     ## markers 
     type_sets = {
         "CD4"     : ['Cd4'],
-        "CD8"     : ['Cd8a', 'Cd8b1','Nkg7'],
+        "CD8"     : ['Cd8a', 'Cd8b1', 'Nkg7'],
     }
 
     CD4_cell_types = {
@@ -266,24 +265,38 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
     type_score_names = []
     subtype_score_names = []
     state_score_names = []
+    
+    var_names = set(mdata['gex'].var_names)
        
     ### 1) Score and assign main cell types (CD4/CD8)
     for name, val in type_sets.items():
-        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name=name+'_score')
-        type_score_names.append(name+'_score')
+        valid_genes = [g for g in val if g in var_names]
+        if valid_genes:
+            sc.tl.score_genes(mdata['gex'], gene_list=valid_genes, score_name=name+'_score')
+            type_score_names.append(name+'_score')
+        else:
+            print(f"Warning: No valid genes found for {name} scoring, skipping. Missing genes: {val}")
      
-    scores = mdata['gex'].obs[type_score_names]
-    best_type = scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
-    keep = scores.max(axis=1) > celltype_score
-    mdata['gex'].obs['cell_type'] = best_type.where(keep, np.nan)
+    if type_score_names:
+        scores = mdata['gex'].obs[type_score_names]
+        best_type = scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
+        keep = scores.max(axis=1) > celltype_score
+        mdata['gex'].obs['cell_type'] = best_type.where(keep, np.nan)
+    else:
+        print("Warning: No cell type scores could be computed. Setting cell_type to NaN.")
+        mdata['gex'].obs['cell_type'] = np.nan
     
     ### 2) For CD4 cells, score subtypes and append to cell_type
     for name, val in CD4_cell_types.items():
-        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name=name+'_score')
-        subtype_score_names.append(name+'_score')
+        valid_genes = [g for g in val if g in var_names]
+        if valid_genes:
+            sc.tl.score_genes(mdata['gex'], gene_list=valid_genes, score_name=name+'_score')
+            subtype_score_names.append(name+'_score')
+        else:
+            print(f"Warning: No valid genes found for {name} scoring, skipping. Missing genes: {val}")
     
     cd4_mask = mdata['gex'].obs['cell_type'] == 'CD4'
-    if cd4_mask.any():
+    if cd4_mask.any() and subtype_score_names:
         subtype_scores = mdata['gex'].obs.loc[cd4_mask, subtype_score_names]
         best_subtype = subtype_scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
         subtype_keep = subtype_scores.max(axis=1) > celltype_score
@@ -291,16 +304,26 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
         mdata['gex'].obs.loc[cd4_mask, 'cell_type'] = (
             'CD4_' + best_subtype.where(subtype_keep, '')
         ).str.rstrip('_')
+    elif cd4_mask.any() and not subtype_score_names:
+        print("Warning: No CD4 subtype scores could be computed. CD4 cells will not have subtype annotation.")
     
     ### 3) Assign cell states using common_states
     for name, val in common_states.items():
-        sc.tl.score_genes(mdata['gex'], gene_list=val, score_name=name+'_score')
-        state_score_names.append(name+'_score')
+        valid_genes = [g for g in val if g in var_names]
+        if valid_genes:
+            sc.tl.score_genes(mdata['gex'], gene_list=valid_genes, score_name=name+'_score')
+            state_score_names.append(name+'_score')
+        else:
+            print(f"Warning: No valid genes found for {name} scoring, skipping. Missing genes: {val}")
      
-    scores = mdata['gex'].obs[state_score_names]
-    best_state = scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
-    keep = scores.max(axis=1) > cellstate_score
-    mdata['gex'].obs['state'] = best_state.where(keep, np.nan)   
+    if state_score_names:
+        scores = mdata['gex'].obs[state_score_names]
+        best_state = scores.idxmax(axis=1).str.replace(r'_score$', '', regex=True)
+        keep = scores.max(axis=1) > cellstate_score
+        mdata['gex'].obs['state'] = best_state.where(keep, np.nan)
+    else:
+        print("Warning: No cell state scores could be computed. Setting state to NaN.")
+        mdata['gex'].obs['state'] = np.nan   
     
     mdata.obs['state'] = mdata['gex'].obs['state']
     mdata.obs['cell_type'] = mdata['gex'].obs['cell_type']
