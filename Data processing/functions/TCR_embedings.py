@@ -95,23 +95,25 @@ def embed_tcr_aa(mdata, tcr_aa_obs=None, tcr_cat_features=None,
         if verbose:
             print(f"Stored {aa_col} Atchley vectors in mdata.obsm['{key_name}'] with shape {encoded.shape}")
         
-        # 2b. Adjacent Atchley factor interactions
-        atchley_positions = encoded.shape[1] // 5
-        pairwise_key = f'X_{aa_col}_atchley_pairwise'
-        if atchley_positions > 1:
-            encoded_reshaped = encoded.reshape(encoded.shape[0], atchley_positions, 5)
-            pairwise_features = []
-            for pos in range(atchley_positions - 1):
-                current = encoded_reshaped[:, pos, :]
-                nxt = encoded_reshaped[:, pos + 1, :]
-                outer = (current[:, :, None] * nxt[:, None, :]).reshape(encoded.shape[0], -1)
-                pairwise_features.append(outer)
-            pairwise_matrix = np.concatenate(pairwise_features, axis=1)
-        else:
-            pairwise_matrix = np.zeros((encoded.shape[0], 0))
-        mdata.obsm[pairwise_key] = pairwise_matrix
-        if verbose:
-            print(f"Stored {aa_col} adjacent Atchley interactions in mdata.obsm['{pairwise_key}'] with shape {pairwise_matrix.shape}")
+        # # 2b. Adjacent Atchley factor interactions
+        # atchley_positions = encoded.shape[1] // 5
+        # pairwise_key = f'X_{aa_col}_atchley_pairwise'
+        # if atchley_positions > 1:
+        #     encoded_reshaped = encoded.reshape(encoded.shape[0], atchley_positions, 5)
+        #     pairwise_features = []
+        #     for pos in range(atchley_positions - 1):
+        #         current = encoded_reshaped[:, pos, :]
+        #         nxt = encoded_reshaped[:, pos + 1, :]
+        #         outer = (current[:, :, None] * nxt[:, None, :]).reshape(encoded.shape[0], -1)
+        #         pairwise_features.append(outer)
+        #     pairwise_matrix = np.concatenate(pairwise_features, axis=1)
+        # else:
+        #     pairwise_matrix = np.zeros((encoded.shape[0], 0))
+        # mdata.obsm[pairwise_key] = pairwise_matrix
+        # if verbose:
+        #     print(f"Stored {aa_col} adjacent Atchley interactions in mdata.obsm['{pairwise_key}'] with shape {pairwise_matrix.shape}")
+        
+
         
         # 3. AA composition (percentage of each of 20 AAs)
         aa_comp = compute_aa_composition_matrix(mdata, aa_col)

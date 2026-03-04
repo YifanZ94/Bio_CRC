@@ -231,11 +231,11 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
         mdata['gex'], qc_vars=["mt", "ribo", "hb"], inplace=True, log1p=True
     )
     
-    # sc.pp.filter_cells(mdata['gex'], min_genes= 300)
-    # sc.pp.filter_cells(mdata['gex'], max_genes= 7000)
-    # sc.pp.filter_cells(mdata['gex'], min_counts=1000)
-    # sc.pp.filter_cells(mdata['gex'], max_counts=40000)
-    # sc.pp.filter_genes(mdata['gex'], min_cells=50)
+    sc.pp.filter_cells(mdata['gex'], min_genes= 300)
+    sc.pp.filter_cells(mdata['gex'], max_genes= 7000)
+    sc.pp.filter_cells(mdata['gex'], min_counts=1000)
+    sc.pp.filter_cells(mdata['gex'], max_counts=40000)
+    sc.pp.filter_genes(mdata['gex'], min_cells=50)
 
     ## markers 
     type_sets = {
@@ -253,13 +253,13 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
     common_states = {
         "Naive"         : ['Ccr7', 'Sell', 'Tcf7', 'Lef1', 'Il7r'],   # both CD4 and CD8 naive
         "Cytotoxic"     : ['Gzmb', 'Gzma', 'Gzmk', 'Prf1', 'Nkg7'],  # Tem_CD8, SLEC, Tex_term, Th1-cytotoxic
-        "Exhaustion_core": ['Pdcd1', 'Tox', 'Lag3', 'Tigit', 'Havcr2'],# shared across Tpex, Tex_int, Tex_term
+        "Exhaustion": ['Pdcd1', 'Tox', 'Lag3', 'Tigit', 'Havcr2'],# shared across Tpex, Tex_int, Tex_term
         "Tcf7_stem"     : ['Tcf7', 'Bcl2', 'Id3', 'Bach2'],           # Tpex, MPEC, Naive
         "Proliferating" : ['Mki67', 'Top2a', 'Tyms', 'Cdk1'],         # any cycling T cell
         "IFN_stim"      : ['Isg15', 'Ifit1', 'Ifit3', 'Mx1', 'Oas1a', 'Gbp2'],
         "Early_activ"   : ['Cd69','Cd28', 'Icos', 'Nr4a1', 'Nr4a2', 'Fos', 'Jun'],
         "Memory_core"   : ['Il7r', 'Bcl2', 'S100a4', 'Ccl5'],         # Tcm, Tem, MPEC
-        "Effector_core" : ['Cx3cr1', 'S1pr1', 'Zeb2', 'Tbx21'],       # SLEC, Tem_CD8, Tex_KLR
+        "Effector" : ['Cx3cr1', 'S1pr1', 'Zeb2', 'Tbx21'],       # SLEC, Tem_CD8, Tex_KLR
     }
     
     type_score_names = []
