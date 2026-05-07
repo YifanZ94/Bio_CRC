@@ -591,3 +591,25 @@ def pearson_corr(adata, var1, markers, var_type='gene'):
     df_gene_corr = pd.DataFrame(corr_results)
     corr_matrix = df_gene_corr.pivot(index='CV_component', columns='gene', values='pearson_r')
     return corr_matrix
+
+
+def select_onecell_per_clone(mdata):
+    airr_obs = mdata['airr'].obs.copy()
+    clone_id_col = airr_obs['clone_id']
+    if hasattr(clone_id_col, 'cat'):
+        clone_id_col = clone_id_col.astype(str)
+    airr_obs['_clone_id_str'] = clone_id_col
+
+    expanded = airr_obs[airr_obs['clone_id_size'] > 1].dropna(subset=['_clone_id_str'])
+    sampled_expanded_idx = (
+        expanded
+        .groupby('_clone_id_str', observed=True)
+        .sample(n=1, random_state=42)
+        .index
+    )
+
+    single_idx = airr_obs[airr_obs['clone_id_size'] == 1].index
+    keep_idx = sampled_expanded_idx.append(single_idx)
+
+    mdata = mdata[keep_idx].copy()
+    return mdata

@@ -6,6 +6,8 @@ import scirpy as ir
 import anndata as ad
 from typing import List, Optional, Sequence
 import mudata as md
+import scipy.sparse as sp
+import copy
 
 import pdb
 
@@ -341,5 +343,312 @@ def pp_EAE(mdata, celltype_score = 0.4, cellstate_score = 0.4, topN_variable = N
     
     return mdata
 
-# def pp_tissue_featured_genes(mdata):
-#     mdata = 
+
+def aggregate_mdata_by_clone(
+    mdata: mu.MuData,
+    clone_col: str = "clone_id",
+    gex_mod: str = "gex",
+    airr_mod: str = "airr",
+) -> mu.MuData:
+    """
+    Build a clone-level MuData: mean gene expression per clone + one AIRR row per clone.
+
+    - GEX: rows = unique clones, X = mean expression over all cells belonging to that clone
+      (denominator = number of cells in the clone). Uses the same ``.var`` as ``mdata[gex_mod]``.
+    - AIRR: one observation per clone, taken as the **first** cell in each clone group
+      (preserves original ``airr`` ``.obs`` columns and ``.var`` / ``X`` layout for that cell).
+
+    Top-level ``mdata.obsm`` matrices aligned with cell rows are **clone-averaged** (mean over
+    cells in each clone). ``mdata.uns`` is **deep-copied** to the output.
+
+    **``mdata.obs``**: every column is copied from the **representative cell** per clone (same
+    cell used for the AIRR row), reindexed to clone IDs, with ``n_cells_in_clone`` added.
+    AIRR-only columns are merged from ``airr.obs``; name clashes get an ``_airr`` suffix.
+
+    ``mdata.obsp`` is not transferred (cell--cell graphs are not defined at clone level here).
+
+    Requires aligned cell indices between ``gex`` and ``airr``. Call ``sync_mdata_obs`` first if needed.
+    """
+    m = inner_cells_per_mdata(mdata, mods=[gex_mod, airr_mod])
+    if clone_col not in m[airr_mod].obs.columns:
+        raise KeyError(f"{clone_col!r} not found in m['{airr_mod}'].obs")
+
+    ad_g = m[gex_mod]
+    ad_a = m[airr_mod]
+    clones = ad_a.obs[clone_col].astype(str)
+    bad = clones.isin(["", "nan", "None", "nan", "NaN"])
+    if bad.any():
+        clones = clones.mask(bad, np.nan)
+
+    # Drop cells with missing clone label for aggregation
+    keep = clones.notna()
+    if not keep.all():
+        m = m[keep.values].copy()
+        ad_g = m[gex_mod]
+        ad_a = m[airr_mod]
+        clones = ad_a.obs[clone_col].astype(str)
+
+    obs_idx = ad_g.obs_names
+    grp = pd.Series(clones.values, index=obs_idx, name="_clone_agg")
+    uniq = pd.Index(sorted(pd.unique(grp.dropna().values)))
+
+    counts = grp.value_counts().reindex(uniq).fillna(0).astype(int)
+    n_cells_per_clone = counts.values
+
+    rep_map = grp.groupby(grp, sort=False).apply(lambda s: s.index[0]).to_dict()
+    rep_index = [rep_map[c] for c in uniq]
+
+    obs_join = m.obs.loc[rep_index].copy()
+    obs_join.index = uniq.astype(str)
+    obs_join["n_cells_in_clone"] = n_cells_per_clone
+    obs_join[clone_col] = uniq.astype(str)
+
+    airr_rep = m[airr_mod].obs.loc[rep_index]
+    for c in airr_rep.columns:
+        if c == clone_col:
+            continue
+        if c in obs_join.columns:
+            obs_join[f"{c}_airr"] = airr_rep[c].values
+        else:
+            obs_join[c] = airr_rep[c].values
+
+    X = ad_g.X
+    mean_rows = []
+    for c in uniq:
+        mask = (grp == c).values
+        if not np.any(mask):
+            continue
+        sub = X[mask, :]
+        if sp.issparse(sub):
+            mean_rows.append(np.asarray(sub.mean(axis=0)).ravel())
+        else:
+            mean_rows.append(np.asarray(sub.mean(axis=0)).ravel())
+    X_clone = np.vstack(mean_rows)
+
+    ad_g_clone = ad.AnnData(
+        X=X_clone,
+        obs=obs_join.copy(),
+        var=ad_g.var.copy(),
+    )
+    ad_g_clone.uns = copy.deepcopy(dict(ad_g.uns))
+
+    ad_a_clone = ad_a[rep_index].copy()
+    ad_a_clone.obs_names = uniq.astype(str)
+    ad_a_clone.obs = obs_join.copy()
+    ad_a_clone.uns = copy.deepcopy(dict(ad_a.uns))
+
+    out = mu.MuData({gex_mod: ad_g_clone, airr_mod: ad_a_clone})
+    out.obs = obs_join.copy()
+
+    out.uns = copy.deepcopy(dict(m.uns))
+    for k, mat in dict(m.obsm).items():
+        try:
+            arr = mat.toarray() if sp.issparse(mat) else np.asarray(mat)
+            if arr.shape[0] != len(grp):
+                raise ValueError(f"obsm row count {arr.shape[0]} != n_obs {len(grp)}")
+            rows = []
+            for c in uniq:
+                mask = (grp == c).values
+                if not np.any(mask):
+                    if arr.ndim > 1:
+                        rows.append(np.full(arr.shape[1:], np.nan))
+                    else:
+                        rows.append(np.nan)
+                    continue
+                blk = arr[mask]
+                if arr.ndim == 1:
+                    rows.append(np.nanmean(blk))
+                else:
+                    rows.append(np.nanmean(blk, axis=0))
+            if arr.ndim == 1:
+                out.obsm[k] = np.asarray(rows).reshape(-1, 1)
+            else:
+                out.obsm[k] = np.vstack(rows)
+        except Exception as exc:
+            print(f"[mdata_utils] skipped obsm[{k!r}] at clone level: {exc}")
+
+    out.update()
+    return out
+
+
+def _ols_slope(x: np.ndarray, y: np.ndarray) -> float:
+    """Univariate OLS slope of ``y`` on ``x`` (both 1-D). Returns NaN if undefined."""
+    x = np.asarray(x, dtype=np.float64).ravel()
+    y = np.asarray(y, dtype=np.float64).ravel()
+    if x.size != y.size or x.size < 2:
+        return float("nan")
+    xm = x - np.nanmean(x)
+    ssx = np.nansum(xm * xm)
+    if ssx <= 0:
+        return float("nan")
+    ym = y - np.nanmean(y)
+    return float(np.nansum(xm * ym) / ssx)
+
+
+def per_clone_gene_slope_mdata(
+    mdata: mu.MuData,
+    clone_col: str = "clone_id",
+    gex_mod: str = "gex",
+    airr_mod: str = "airr",
+    min_nonzero_cells: int = 2,
+    min_cells_per_clone: int = 3,
+    slope_x_col: Optional[str] = None,
+    layer: Optional[str] = None,
+) -> mu.MuData:
+    """
+    For each clone, keep genes that are **strictly** nonzero in **more than** ``min_nonzero_cells``
+    cells (within that clone), then fit **y ~ x** where ``y`` is the gene's expression in each cell
+    and ``x`` is either:
+
+    - ``m.obs[slope_x_col]`` (must be numeric, same cells as ``gex``), or
+    - if ``slope_x_col`` is ``None``, ``x = 0, 1, …, n-1`` in the order cells appear in
+      ``adata.obs_names`` for that clone (a positional axis — supply ``slope_x_col`` for a
+      meaningful covariate such as pseudotime or library size).
+
+    Slopes are stored in ``out[gex_mod].X`` with shape **(n_clones, n_genes)**. Entries are **0**
+    when the gene did not pass the per-clone nonzero filter (``nnz <= min_nonzero_cells``) or when
+    the slope is undefined (e.g. constant ``x``). The matrix is always NaN-free.
+
+    **Metadata layout:**
+
+    - ``out.obs`` (mdata level): ``m.obs`` rows for the representative cell of each clone,
+      reindexed to clone ids, with ``n_cells_in_clone`` and ``slope_skipped`` appended.
+      No AIRR columns are merged in.
+    - ``out.uns``: deep copy of ``m.uns`` with ``per_clone_gene_slope`` params added.
+    - ``out.obsm``: representative cell row per clone from each ``m.obsm`` key (no averaging).
+    - ``out[airr_mod]``: one row per clone (representative cell); ``obs_names`` = clone ids;
+      ``.obs`` is the original ``airr.obs`` columns for that cell, **unchanged** (no merge).
+    - ``out[gex_mod].obs``: same as ``out.obs``.
+    """
+    m = inner_cells_per_mdata(mdata, mods=[gex_mod, airr_mod])
+    if clone_col not in m[airr_mod].obs.columns:
+        raise KeyError(f"{clone_col!r} not found in m['{airr_mod}'].obs")
+    if slope_x_col is not None and slope_x_col not in m.obs.columns:
+        raise KeyError(f"{slope_x_col!r} not found in m.obs")
+
+    # Use ``adata_g`` (not ``ad``) so we do not shadow ``import anndata as ad``.
+    adata_g = m[gex_mod]
+    adata_a = m[airr_mod]
+    clones = adata_a.obs[clone_col].astype(str)
+    bad = clones.isin(["", "nan", "None", "nan", "NaN"])
+    if bad.any():
+        clones = clones.mask(bad, np.nan)
+    keep = clones.notna()
+    if not keep.all():
+        m = m[keep.values].copy()
+        adata_g = m[gex_mod]
+        adata_a = m[airr_mod]
+        clones = adata_a.obs[clone_col].astype(str)
+
+    obs_names = adata_g.obs_names
+    grp = pd.Series(clones.values, index=obs_names, name="_clone_slope")
+    uniq = pd.Index(sorted(pd.unique(grp.dropna().values)))
+
+    counts = grp.value_counts().reindex(uniq).fillna(0).astype(int)
+
+    # Representative cell per clone (first cell in sorted obs order).
+    rep_map = grp.groupby(grp, sort=False).apply(lambda s: s.index[0]).to_dict()
+    rep_index = [rep_map[c] for c in uniq]
+
+    # out.obs: m.obs rows for the representative cell + n_cells_in_clone + slope_skipped.
+    # No AIRR columns merged here — airr modality carries those unchanged.
+    obs_df = m.obs.loc[rep_index].copy()
+    obs_df.index = uniq.astype(str)
+    obs_df["n_cells_in_clone"] = counts.values
+    obs_df[clone_col] = uniq.astype(str)
+    obs_df["slope_skipped"] = (counts < int(min_cells_per_clone)).to_numpy(dtype=bool)
+
+    n_genes = adata_g.n_vars
+    # Initialise to 0: genes that don't pass the per-clone nonzero filter
+    # or whose slope is undefined are treated as "no slope signal" (0),
+    # so the matrix is NaN-free and safe for downstream tools (PCA, etc.).
+    slope_mat = np.zeros((len(uniq), n_genes), dtype=np.float64)
+
+    for ri, c in enumerate(uniq):
+        n_c = int(counts.loc[c])
+        mask = (grp == c).values
+        if n_c < min_cells_per_clone:
+            continue
+
+        sub = adata_g[mask]
+        Xs = sub.layers[layer] if layer is not None else sub.X
+        if sp.issparse(Xs):
+            Xd = Xs.toarray()
+        else:
+            Xd = np.asarray(Xs, dtype=np.float64)
+
+        if slope_x_col is None:
+            x = np.arange(n_c, dtype=np.float64)
+        else:
+            idx_cells = sub.obs_names
+            x = np.asarray(m.obs.loc[idx_cells, slope_x_col], dtype=np.float64).ravel()
+
+        nnz = np.sum(Xd != 0.0, axis=0)
+        use_gene = nnz > int(min_nonzero_cells)
+
+        for gj in np.flatnonzero(use_gene):
+            y = Xd[:, gj]
+            s = _ols_slope(x, y)
+            # _ols_slope returns nan when slope is undefined (e.g. constant x);
+            # keep 0 in those cases so X stays NaN-free.
+            if not np.isnan(s):
+                slope_mat[ri, gj] = s
+
+    ad_out = ad.AnnData(
+        X=slope_mat,
+        obs=obs_df.copy(),
+        var=adata_g.var.copy(),
+    )
+    ad_out.uns = copy.deepcopy(dict(adata_g.uns))
+
+    # airr modality: one row per clone (representative cell), obs unchanged.
+    ad_a_clone = adata_a[rep_index].copy()
+    ad_a_clone.obs_names = uniq.astype(str)
+    ad_a_clone.uns = copy.deepcopy(dict(adata_a.uns))
+
+    out = mu.MuData({gex_mod: ad_out, airr_mod: ad_a_clone})
+    out.obs = obs_df.copy()
+
+    # uns: deep copy of m.uns, then add slope parameters.
+    out.uns = copy.deepcopy(dict(m.uns))
+    out.uns["per_clone_gene_slope"] = {
+        "min_nonzero_cells": int(min_nonzero_cells),
+        "min_cells_per_clone": int(min_cells_per_clone),
+        "slope_x_col": slope_x_col,
+        "layer": layer,
+    }
+
+    # obsm: representative cell row per clone from each m.obsm key.
+    for k, mat in dict(m.obsm).items():
+        try:
+            arr = mat.toarray() if sp.issparse(mat) else np.asarray(mat)
+            out.obsm[k] = arr[
+                [obs_names.get_loc(r) for r in rep_index], :
+            ] if arr.ndim > 1 else arr[[obs_names.get_loc(r) for r in rep_index]]
+        except Exception as exc:
+            print(f"[mdata_utils] skipped obsm[{k!r}]: {exc}")
+
+    out.update()
+    return out
+
+
+def select_onecell_per_clone(mdata):
+    airr_obs = mdata['airr'].obs.copy()
+    clone_id_col = airr_obs['clone_id']
+    if hasattr(clone_id_col, 'cat'):
+        clone_id_col = clone_id_col.astype(str)
+    airr_obs['_clone_id_str'] = clone_id_col
+
+    expanded = airr_obs[airr_obs['clone_id_size'] > 1].dropna(subset=['_clone_id_str'])
+    sampled_expanded_idx = (
+        expanded
+        .groupby('_clone_id_str', observed=True)
+        .sample(n=1, random_state=42)
+        .index
+    )
+
+    single_idx = airr_obs[airr_obs['clone_id_size'] == 1].index
+    keep_idx = sampled_expanded_idx.append(single_idx)
+
+    mdata = mdata[keep_idx].copy()
+    return mdata
