@@ -361,9 +361,12 @@ def aggregate_mdata_by_clone(
     Top-level ``mdata.obsm`` matrices aligned with cell rows are **clone-averaged** (mean over
     cells in each clone). ``mdata.uns`` is **deep-copied** to the output.
 
-    **``mdata.obs``**: every column is copied from the **representative cell** per clone (same
-    cell used for the AIRR row), reindexed to clone IDs, with ``n_cells_in_clone`` added.
-    AIRR-only columns are merged from ``airr.obs``; name clashes get an ``_airr`` suffix.
+    **obs_names**: the original cell barcode of the representative cell (unchanged).
+    **``mdata[gex_mod].obs``**: gex-modality columns for the rep cell + ``n_cells_in_clone``
+    and ``clone_col``.  No airr columns are mixed in.
+    **``mdata[airr_mod].obs``**: airr-modality columns for the rep cell, unchanged.
+    **``mdata.obs``** (top-level): all gex columns prefixed ``gex:`` joined with all airr
+    columns prefixed ``airr:``.
 
     ``mdata.obsp`` is not transferred (cell--cell graphs are not defined at clone level here).
 
@@ -398,19 +401,22 @@ def aggregate_mdata_by_clone(
     rep_map = grp.groupby(grp, sort=False).apply(lambda s: s.index[0]).to_dict()
     rep_index = [rep_map[c] for c in uniq]
 
-    obs_join = m.obs.loc[rep_index].copy()
-    obs_join.index = uniq.astype(str)
-    obs_join["n_cells_in_clone"] = n_cells_per_clone
-    obs_join[clone_col] = uniq.astype(str)
+    # Map rep cell barcode → clone-level values (index stays as cell barcodes)
+    rep_to_count = {rep_map[c]: int(counts.loc[c]) for c in uniq}
+    rep_to_clone = {rep_map[c]: c for c in uniq}
 
-    airr_rep = m[airr_mod].obs.loc[rep_index]
-    for c in airr_rep.columns:
-        if c == clone_col:
-            continue
-        if c in obs_join.columns:
-            obs_join[f"{c}_airr"] = airr_rep[c].values
-        else:
-            obs_join[c] = airr_rep[c].values
+    # ── GEX obs: only gex columns, obs_names = rep cell barcodes ─────────────
+    gex_obs = ad_g.obs.loc[rep_index].copy()
+    gex_obs["n_cells_in_clone"] = [rep_to_count[r] for r in rep_index]
+    gex_obs[clone_col] = [rep_to_clone[r] for r in rep_index]
+
+    # ── AIRR obs: only airr columns, obs_names = rep cell barcodes ────────────
+    airr_obs = ad_a.obs.loc[rep_index].copy()
+
+    # ── Top-level obs: gex: + airr: prefixed columns ──────────────────────────
+    obs_join = gex_obs.rename(columns=lambda c: f"gex:{c}").join(
+        airr_obs.rename(columns=lambda c: f"airr:{c}"), how="left"
+    )
 
     X = ad_g.X
     mean_rows = []
@@ -427,14 +433,14 @@ def aggregate_mdata_by_clone(
 
     ad_g_clone = ad.AnnData(
         X=X_clone,
-        obs=obs_join.copy(),
+        obs=gex_obs.copy(),
         var=ad_g.var.copy(),
     )
     ad_g_clone.uns = copy.deepcopy(dict(ad_g.uns))
 
+    # airr: rep cells, obs = airr-only columns, obs_names = rep cell barcodes
     ad_a_clone = ad_a[rep_index].copy()
-    ad_a_clone.obs_names = uniq.astype(str)
-    ad_a_clone.obs = obs_join.copy()
+    ad_a_clone.obs = airr_obs.copy()
     ad_a_clone.uns = copy.deepcopy(dict(ad_a.uns))
 
     out = mu.MuData({gex_mod: ad_g_clone, airr_mod: ad_a_clone})
@@ -511,14 +517,14 @@ def per_clone_gene_slope_mdata(
 
     **Metadata layout:**
 
-    - ``out.obs`` (mdata level): ``m.obs`` rows for the representative cell of each clone,
-      reindexed to clone ids, with ``n_cells_in_clone`` and ``slope_skipped`` appended.
-      No AIRR columns are merged in.
+    - **obs_names**: original rep-cell barcode (unchanged throughout).
+    - ``out[gex_mod].obs``: gex-modality columns for the rep cell + ``n_cells_in_clone``,
+      ``clone_col``, ``slope_skipped``.  No airr columns mixed in.
+    - ``out[airr_mod].obs``: airr-modality columns for the rep cell, unchanged.
+    - ``out.obs`` (top-level): gex columns prefixed ``gex:`` joined with airr columns
+      prefixed ``airr:``.
     - ``out.uns``: deep copy of ``m.uns`` with ``per_clone_gene_slope`` params added.
     - ``out.obsm``: representative cell row per clone from each ``m.obsm`` key (no averaging).
-    - ``out[airr_mod]``: one row per clone (representative cell); ``obs_names`` = clone ids;
-      ``.obs`` is the original ``airr.obs`` columns for that cell, **unchanged** (no merge).
-    - ``out[gex_mod].obs``: same as ``out.obs``.
     """
     m = inner_cells_per_mdata(mdata, mods=[gex_mod, airr_mod])
     if clone_col not in m[airr_mod].obs.columns:
@@ -550,13 +556,15 @@ def per_clone_gene_slope_mdata(
     rep_map = grp.groupby(grp, sort=False).apply(lambda s: s.index[0]).to_dict()
     rep_index = [rep_map[c] for c in uniq]
 
-    # out.obs: m.obs rows for the representative cell + n_cells_in_clone + slope_skipped.
-    # No AIRR columns merged here — airr modality carries those unchanged.
-    obs_df = m.obs.loc[rep_index].copy()
-    obs_df.index = uniq.astype(str)
-    obs_df["n_cells_in_clone"] = counts.values
-    obs_df[clone_col] = uniq.astype(str)
-    obs_df["slope_skipped"] = (counts < int(min_cells_per_clone)).to_numpy(dtype=bool)
+    # Map rep cell barcode → clone-level values (index stays as cell barcodes)
+    rep_to_count = {rep_map[c]: int(counts.loc[c]) for c in uniq}
+    rep_to_clone = {rep_map[c]: c for c in uniq}
+
+    # ── GEX obs: only gex columns, obs_names = rep cell barcodes ─────────────
+    obs_df = adata_g.obs.loc[rep_index].copy()
+    obs_df["n_cells_in_clone"] = [rep_to_count[r] for r in rep_index]
+    obs_df[clone_col] = [rep_to_clone[r] for r in rep_index]
+    obs_df["slope_skipped"] = [rep_to_count[r] < int(min_cells_per_clone) for r in rep_index]
 
     n_genes = adata_g.n_vars
     # Initialise to 0: genes that don't pass the per-clone nonzero filter
@@ -601,13 +609,19 @@ def per_clone_gene_slope_mdata(
     )
     ad_out.uns = copy.deepcopy(dict(adata_g.uns))
 
-    # airr modality: one row per clone (representative cell), obs unchanged.
+    # ── AIRR obs: only airr columns, obs_names = rep cell barcodes ────────────
+    airr_obs = adata_a.obs.loc[rep_index].copy()
     ad_a_clone = adata_a[rep_index].copy()
-    ad_a_clone.obs_names = uniq.astype(str)
+    ad_a_clone.obs = airr_obs.copy()
     ad_a_clone.uns = copy.deepcopy(dict(adata_a.uns))
 
+    # ── Top-level obs: gex: + airr: prefixed columns ──────────────────────────
+    top_obs = obs_df.rename(columns=lambda c: f"gex:{c}").join(
+        airr_obs.rename(columns=lambda c: f"airr:{c}"), how="left"
+    )
+
     out = mu.MuData({gex_mod: ad_out, airr_mod: ad_a_clone})
-    out.obs = obs_df.copy()
+    out.obs = top_obs.copy()
 
     # uns: deep copy of m.uns, then add slope parameters.
     out.uns = copy.deepcopy(dict(m.uns))
