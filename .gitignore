@@ -8,6 +8,7 @@
 !*.ipynb
 !*.py
 !.dvc
+!*.dvc
 
 # Optional: Allow folders to be tracked (required if .ipynb/.py are in subfolders)
 !*/
